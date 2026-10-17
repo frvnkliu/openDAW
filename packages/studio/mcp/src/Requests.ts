@@ -79,16 +79,17 @@ class WorkspaceHost implements ScriptHostProtocol {
 }
 
 const saveRecord = (workspace: Workspace, script: Nullable<string>, label: string, status: RequestStatus,
-                    fields: RequestFields): RequestRecord => {
+                    fields: RequestFields, graph?: BoxGraph): RequestRecord => {
     const request: RequestRecord = {id: UUID.toString(UUID.generate()).slice(0, 8), label, status, message: null,
         output: [], undoes: null, updates: null, checksum: null, ...fields, time: new Date().toISOString()}
-    workspace.saveRecord(request, script)
+    if (isDefined(graph)) {workspace.commitRequest(graph, request, script)} else {workspace.saveRecord(request, script)}
     return request
 }
 
 export const runRequest = async (workspace: Workspace, script: string, label: string,
                                  timeout: int = 30_000): Promise<RequestRecord> => {
-    const save = (status: RequestStatus, fields: RequestFields) => saveRecord(workspace, script, label, status, fields)
+    const save = (status: RequestStatus, fields: RequestFields, graph?: BoxGraph) =>
+        saveRecord(workspace, script, label, status, fields, graph)
     const graph = workspace.loadGraph()
     const diagnostics = checkScript(script)
     if (diagnostics.length > 0) {
@@ -106,13 +107,12 @@ export const runRequest = async (workspace: Workspace, script: string, label: st
         return save("unchanged", {message: "No changes. A script applies its changes with 'project.openInStudio()'.", output})
     }
     if (checksumOf(workspace.loadGraph()) !== before) {return save("failed", {message: CHANGED, output})}
-    workspace.saveGraph(graph)
-    return save("applied", {output, updates: encodeUpdates(host.updates), checksum: checksumOf(graph)})
+    return save("applied", {output, updates: encodeUpdates(host.updates), checksum: checksumOf(graph)}, graph)
 }
 
 export const undoRequest = (workspace: Workspace): Option<RequestRecord> => workspace.undoTarget().map(target => {
-    const save = (status: RequestStatus, fields: RequestFields) =>
-        saveRecord(workspace, null, `Undo ${target.label}`, status, {undoes: target.id, ...fields})
+    const save = (status: RequestStatus, fields: RequestFields, graph?: BoxGraph) =>
+        saveRecord(workspace, null, `Undo ${target.label}`, status, {undoes: target.id, ...fields}, graph)
     const graph = workspace.loadGraph()
     if (checksumOf(graph) !== target.checksum) {
         return save("failed", {message: "The project changed outside these tools after that request. Undo cannot take it back."})
@@ -121,8 +121,7 @@ export const undoRequest = (workspace: Workspace): Option<RequestRecord> => work
     const inverse = () => updates.toReversed().forEach(update => update.inverse(graph))
     const inverted = transact(graph, inverse)
     if (inverted.status === "failure") {return save("failed", {message: messageOf(inverted.error)})}
-    workspace.saveGraph(graph)
-    return save("applied", {})
+    return save("applied", {}, graph)
 })
 
 export const formatRecord = ({id, label, status, message, output}: RequestRecord): string =>

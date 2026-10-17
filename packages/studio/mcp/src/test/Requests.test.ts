@@ -1,4 +1,4 @@
-import {existsSync} from "node:fs"
+import {existsSync, readFileSync, rmSync, writeFileSync} from "node:fs"
 import {join} from "node:path"
 import {beforeEach, describe, expect, it} from "vitest"
 import {ProjectSkeleton} from "@opendaw/studio-adapters"
@@ -30,6 +30,18 @@ describe("requests", () => {
         expect(undoRequest(workspace).unwrap().status).toBe("applied")
         expect(checksumOf(workspace.loadGraph())).toBe(initial)
         expect(undoRequest(workspace).isEmpty()).true
+    })
+
+    it("leaves the project untouched when request storage is unavailable", async () => {
+        const before = readFileSync(workspace.projectFile)
+        writeFileSync(workspace.requestsDirectory, "existing file")
+        await expect(runRequest(workspace, TEMPO, "Tempo")).rejects.toThrow()
+        expect(readFileSync(workspace.projectFile)).toEqual(before)
+        rmSync(workspace.requestsDirectory)
+        expect(undoRequest(workspace).isEmpty()).true
+        expect((await runRequest(workspace, TEMPO, "Tempo")).status).toBe("applied")
+        expect(undoRequest(workspace).unwrap().status).toBe("applied")
+        expect(checksumOf(workspace.loadGraph())).toBe(initial)
     })
 
     it("undoes the requests newest first", async () => {

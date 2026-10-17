@@ -22,6 +22,10 @@ Scripts run in a Node worker thread with the rights of the user and an empty `pr
 would also run in a shell. Use one writer for each workspace: a script is refused when the project changed
 while it ran, but two processes that save at the same moment are not detected.
 
+Applied requests and undo write their history before replacing `project.od`. If a save fails before that replacement,
+the project stays unchanged and the partial history is removed. A pending transaction lets the next command finish
+this cleanup after a process interruption; if the project replacement completed, its history is kept.
+
 ## Architecture
 
 * `src/Script.ts` checks a script with the compiler options and declaration files of the studio's script editor
