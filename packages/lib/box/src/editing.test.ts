@@ -1108,3 +1108,91 @@ describe("#306 each automation-node placement is its own undo step", () => {
         expect(scene.editing.canUndo()).false
     })
 })
+
+describe("a constructor pointer that changes again in the same transaction", () => {
+    // A pointer set in a box constructor is processed at the end of the transaction. A later change of the same
+    // pointer must still come after it: in the resolved target, in the recorded undo step and in a rollback.
+    interface TestScene {
+        graph: BoxGraph
+        editing: BoxEditing
+        first: MandatoryBox
+        second: MandatoryBox
+    }
+
+    beforeEach<TestScene>((scene: TestScene) => {
+        scene.graph = createGraphWithFactory()
+        scene.editing = new BoxEditing(scene.graph)
+        const createTarget = () => {
+            const target = MandatoryBox.create(scene.graph, UUID.generate())
+            RefBox.create(scene.graph, UUID.generate(), box => box.target.refer(target))
+            return target
+        }
+        scene.first = scene.editing.modify(createTarget).unwrap()
+        scene.second = scene.editing.modify(createTarget).unwrap()
+    })
+
+    it("clears the pointer, then undoes and redoes the step", (scene: TestScene) => {
+        const box = scene.editing.modify(() => {
+            const box = BarBox.create(scene.graph, UUID.generate(), box => box.pointer.refer(scene.first))
+            box.pointer.defer()
+            return box
+        }).unwrap()
+        const uuid = box.address.uuid
+        expect(box.pointer.targetVertex.isEmpty()).true
+        expect(scene.first.pointerHub.size()).toBe(1)
+        expect(scene.editing.undo()).true
+        expect(scene.graph.findBox(uuid).isEmpty()).true
+        expect(scene.first.pointerHub.size()).toBe(1)
+        expect(scene.editing.redo()).true
+        expect((scene.graph.findBox(uuid).unwrap() as BarBox).pointer.isEmpty()).true
+    })
+
+    it("points at the second target, then undoes and redoes the step", (scene: TestScene) => {
+        const box = scene.editing.modify(() => {
+            const box = BarBox.create(scene.graph, UUID.generate(), box => box.pointer.refer(scene.first))
+            box.pointer.refer(scene.second)
+            return box
+        }).unwrap()
+        const uuid = box.address.uuid
+        expect(box.pointer.targetVertex.unwrap().address.equals(scene.second.address)).true
+        expect(scene.first.pointerHub.size()).toBe(1)
+        expect(scene.second.pointerHub.size()).toBe(2)
+        expect(scene.editing.undo()).true
+        expect(scene.graph.findBox(uuid).isEmpty()).true
+        expect(scene.second.pointerHub.size()).toBe(1)
+        expect(scene.editing.redo()).true
+        const redone = scene.graph.findBox(uuid).unwrap() as BarBox
+        expect(redone.pointer.targetVertex.unwrap().address.equals(scene.second.address)).true
+    })
+
+    it("keeps the order when a listener changes another constructor pointer", (scene: TestScene) => {
+        const {first, second} = scene
+        const [other, box] = scene.editing.modify(() => {
+            const other = BarBox.create(scene.graph, UUID.generate(), box => box.pointer.refer(first))
+            const box = BarBox.create(scene.graph, UUID.generate(), box => box.pointer.refer(first))
+            // When the constructor update of box arrives, the listener changes the pointer of other
+            const subscription = scene.graph.subscribeToAllUpdates({
+                onUpdate: update => {
+                    if (update.type === "pointer" && update.address.equals(box.pointer.address)) {other.pointer.refer(second)}
+                }
+            })
+            box.pointer.refer(second)
+            subscription.terminate()
+            return [other, box]
+        }).unwrap()
+        expect(box.pointer.targetVertex.unwrap().address.equals(second.address)).true
+        expect(other.pointer.targetVertex.unwrap().address.equals(second.address)).true
+        expect(scene.editing.undo()).true
+        expect(scene.editing.redo()).true
+    })
+
+    it("rolls back an aborted transaction", (scene: TestScene) => {
+        expect(() => scene.editing.modify(() => {
+            const box = BarBox.create(scene.graph, UUID.generate(), box => box.pointer.refer(scene.first))
+            box.pointer.defer()
+            panic("forced failure")
+        })).toThrow("forced failure")
+        expect(scene.graph.boxes().length).toBe(4)
+        expect(scene.first.pointerHub.size()).toBe(1)
+    })
+})

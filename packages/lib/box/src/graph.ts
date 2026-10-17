@@ -1,4 +1,5 @@
 import {
+    Arrays,
     asDefined,
     assert,
     ByteArrayInput,
@@ -51,6 +52,7 @@ export class BoxGraph<BoxMap = any> {
     readonly #boxFactory: Option<BoxFactory<BoxMap>>
     readonly #boxes: SortedSet<Readonly<Uint8Array>, Box>
     readonly #deferredPointerUpdates: Array<{ pointerField: PointerField, update: PointerUpdate }>
+    readonly #deferredPointerFields: Set<PointerField>
     readonly #pendingDeferredNotifications: Array<{ pointerField: PointerField, update: PointerUpdate }>
     readonly #transactionUpdates: Array<Update>
     readonly #updateListeners: Listeners<UpdateListener>
@@ -75,6 +77,7 @@ export class BoxGraph<BoxMap = any> {
         this.#boxFactory = boxFactory
         this.#boxes = UUID.newSet<Box>(box => box.address.uuid)
         this.#deferredPointerUpdates = []
+        this.#deferredPointerFields = new Set()
         this.#pendingDeferredNotifications = []
         this.#transactionUpdates = []
         this.#dispatchers = Dispatchers.create()
@@ -268,11 +271,24 @@ export class BoxGraph<BoxMap = any> {
         const update = new PointerUpdate(pointerField.address, oldValue, newValue)
         if (this.#constructingBox) {
             this.#deferredPointerUpdates.push({pointerField, update})
+            this.#deferredPointerFields.add(pointerField)
         } else {
+            this.#processDeferredPointerUpdates(pointerField)
             if (!this.#rollingBack) {this.#transactionUpdates.push(update)}
             this.#processPointerVertexUpdate(pointerField, update)
             this.#immediateUpdateListeners.proxy.onUpdate(update)
         }
+    }
+
+    // Processes the constructor updates of a pointer before its next change, not at the end of the transaction
+    #processDeferredPointerUpdates(pointerField: PointerField): void {
+        if (!this.#deferredPointerFields.delete(pointerField)) {return}
+        const updates = this.#deferredPointerUpdates.filter(deferred => deferred.pointerField === pointerField)
+        Arrays.removeIf(this.#deferredPointerUpdates, deferred => deferred.pointerField === pointerField)
+        updates.forEach(({update}) => {
+            if (!this.#rollingBack) {this.#transactionUpdates.push(update)}
+            this.#processPointerVertexUpdate(pointerField, update)
+        })
     }
 
     #processPointerVertexUpdate(pointerField: PointerField, update: PointerUpdate): void {
@@ -317,6 +333,7 @@ export class BoxGraph<BoxMap = any> {
     }
 
     #finalizeTransaction(): void {
+        this.#deferredPointerFields.clear()
         this.#pointerTransactionState.values()
             .toSorted((a, b) => a.index - b.index)
             .forEach(({pointer, initial, final}) => {
